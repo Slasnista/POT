@@ -423,6 +423,200 @@ def joint_OT_mapping_linear(xs, xt, mu=1, eta=0.001, bias=False, verbose=False,
         return G, L
 
 
+def joint_linear_ot_mapping(
+        Xs, Xt, mu=1, eta=0.001,
+        use_bias=False, verbose=False,
+        verbose2=False, max_iter=100, max_inner_iter=10,
+        inner_tol=1e-6, tol=1e-5, log=False,
+        **kwargs):
+    """Joint OT and linear mapping estimation as proposed in [8]
+
+    The function solves the following optimization problem:
+
+    .. math::
+        \min_{\gamma,L}\quad \|L(X_s) -n_s\gamma X_t\|^2_F +
+          \mu<\gamma,M>_F + \eta  \|L -I\|^2_F
+
+        s.t. \gamma 1 = a
+
+             \gamma^T 1= b
+
+             \gamma\geq 0
+    where :
+
+    - M is the (ns,nt) squared euclidean cost matrix between samples in
+       Xs and Xt (scaled by ns)
+    - :math:`L` is a dxd linear operator that approximates the barycentric
+      mapping
+    - :math:`I` is the identity matrix (neutral linear mapping)
+    - a and b are uniform source and target weights
+
+    The problem consist in solving jointly an optimal transport matrix
+    :math:`\gamma` and a linear mapping that fits the barycentric mapping
+    :math:`n_s\gamma X_t`.
+
+    One can also estimate a mapping with constant bias (see supplementary
+    material of [8]) using the bias optional argument.
+
+    The algorithm used for solving the problem is the block coordinate
+    descent that alternates between updates of G (using conditionnal gradient)
+    and the update of L using a classical least square solver.
+
+
+    Parameters
+    ----------
+    Xs : array-like, shape (n_source_samples, n_features)
+        Array of source samples
+    Xt : array-like, shape (n_target_samples, n_features)
+        Array of target samples
+    mu : float, optional (default=1.)
+        Weight for the linear OT loss (>0)
+    eta : float, optional (default=1e-3)
+        Regularization term  for the linear mapping L (>0)
+    use_bias : bool, optional (default=False)
+        Estimate linear mapping with constant bias
+    max_iter : int, optional (default=100)
+        Max number of BCD iterations
+    tol : float, optional (default=1e-5)
+        Stop threshold on relative loss decrease (>0)
+    max_inner_iter : int, optional (default=10)
+        Max number of iterations (inner CG solver)
+    inner_tol : float, optional (default=1e-6)
+        Stop threshold on error (inner CG solver) (>0)
+    verbose : bool, optional
+        Print information along iterations
+    verbose2 : bool, optional
+        Print information along iterations
+    log : bool, optional
+        record log if True
+
+    Returns
+    -------
+    Coupling : array-like, shape (n_source_samples x n_target_samples)
+        The optimal coupling matrix
+    Mapping : array-like, shape (n_features, n_features)
+        Linear mapping matrix
+    Bias : array-like, shape (n_features,)
+        The bias vector
+    log : dict
+        log dictionary return only if log==True in parameters
+
+    References
+    ----------
+
+    .. [8] M. Perrot, N. Courty, R. Flamary, A. Habrard,
+        "Mapping estimation for discrete optimal transport",
+        Neural Information Processing Systems (NIPS), 2016.
+
+    See Also
+    --------
+    ot.lp.emd : Unregularized OT
+    ot.optim.cg : General regularized OT
+
+    """
+
+    ns, nt, n_features = Xs.shape[0], Xt.shape[0], Xt.shape[1]
+
+    if use_bias:
+        Xs1 = np.hstack((Xs, np.ones((ns, 1))))
+        xstxs = Xs1.T.dot(Xs1)
+        Id = np.eye(n_features + 1)
+        Id[-1] = 0
+        I0 = Id[:, :-1]
+
+        def sel(x):
+            return x[:-1, :]
+    else:
+        Xs1 = Xs
+        xstxs = Xs1.T.dot(Xs1)
+        Id = np.eye(n_features)
+        I0 = Id
+
+        def sel(x):
+            return x
+
+    if log:
+        log = {'err': []}
+
+    mu_s, mu_t = unif(ns), unif(nt)
+
+    # I can modify the cost function here
+    Cost = dist(Xs, Xt) * ns
+    Coupling = emd(mu_s, mu_t, Cost)
+
+    vloss = []
+
+    def loss_(L, Coupling):
+        """Compute full loss"""
+        return np.sum((Xs1.dot(L) - ns * Coupling.dot(Xt))**2) + mu * np.sum(Coupling * Cost) + eta * np.sum(sel(L - I0)**2)
+
+    def update_mapping(Coupling):
+        """ solve L problem with fixed G (least square)"""
+        Xst = ns * Coupling.dot(Xt)
+        return np.linalg.solve(xstxs + eta * Id, Xs1.T.dot(Xst) + eta * I0)
+
+    def update_coupling(L, Coupling_past):
+        """Update G with CG algorithm"""
+        Xsi = Xs1.dot(L)
+
+        def f(Coupling):
+            return np.sum((Xsi - ns * Coupling.dot(Xt))**2)
+
+        def df(Coupling):
+            return -2 * ns * (Xsi - ns * Coupling.dot(Xt)).dot(Xt.T)
+
+        Coupling_new = cg(
+            mu_s, mu_t, Cost, 1.0 / mu, f, df, G0=Coupling_past,
+            numItermax=max_inner_iter, stopThr=inner_tol)
+
+        return Coupling_new
+
+    L = update_mapping(Coupling)
+
+    vloss.append(loss_(L, Coupling))
+
+    if verbose:
+        print('{:5s}|{:12s}|{:8s}'.format(
+            'It.', 'Loss', 'Delta loss') + '\n' + '-' * 32)
+        print('{:5d}|{:8e}|{:8e}'.format(0, vloss[-1], 0))
+
+    # main loop
+    for it in range(max_iter):
+
+        # update Coupling
+        Coupling = update_coupling(L, Coupling)
+
+        # update Mapping
+        L = update_mapping(Coupling)
+
+        vloss.append(loss_(L, Coupling))
+
+        # if tol reached finished
+        if abs(vloss[-1] - vloss[-2]) / abs(vloss[-2]) < tol:
+            break
+
+        if verbose:
+            if it % 20 == 0:
+                print('{:5s}|{:12s}|{:8s}'.format(
+                    'It.', 'Loss', 'Delta loss') + '\n' + '-' * 32)
+            print('{:5d}|{:8e}|{:8e}'.format(
+                it, vloss[-1], (vloss[-1] - vloss[-2]) / abs(vloss[-2])))
+
+    if use_bias:
+        Mapping = L[:n_features, :]
+        Bias = L[n_features, :]
+    else:
+        Mapping = L
+        Bias = np.zeros(n_features)
+
+    if log:
+        log['loss'] = vloss
+        return Coupling, Mapping, Bias, log
+
+    else:
+        return Coupling, Mapping, Bias
+
+
 def joint_OT_mapping_kernel(xs, xt, mu=1, eta=0.001, kerneltype='gaussian',
                             sigma=1, bias=False, verbose=False, verbose2=False,
                             numItermax=100, numInnerItermax=10,
@@ -1774,5 +1968,176 @@ class MappingTransport(BaseEstimator):
                 if self.bias:
                     K = np.hstack((K, np.ones((Xs.shape[0], 1))))
                 transp_Xs = K.dot(self.mapping_)
+
+            return transp_Xs
+
+
+class NewMappingTransport(BaseEstimator):
+    """MappingTransport: DA methods that aims at jointly estimating a optimal
+    transport coupling and the associated mapping
+
+    Parameters
+    ----------
+    mu : float, optional (default=1)
+        Weight for the linear OT loss (>0)
+    eta : float, optional (default=0.001)
+        Regularization term for the linear mapping L (>0)
+    bias : bool, optional (default=False)
+        Estimate linear mapping with constant bias
+    metric : string, optional (default="sqeuclidean")
+        The ground metric for the Wasserstein problem
+    norm : string, optional (default=None)
+        If given, normalize the ground metric to avoid numerical errors that
+        can occur with large metric values.
+    kernel : string, optional (default="linear")
+        The kernel to use either linear or gaussian
+    sigma : float, optional (default=1)
+        The gaussian kernel parameter
+    max_iter : int, optional (default=100)
+        Max number of BCD iterations
+    tol : float, optional (default=1e-5)
+        Stop threshold on relative loss decrease (>0)
+    max_inner_iter : int, optional (default=10)
+        Max number of iterations (inner CG solver)
+    inner_tol : float, optional (default=1e-6)
+        Stop threshold on error (inner CG solver) (>0)
+    verbose : bool, optional (default=False)
+        Print information along iterations
+    log : bool, optional (default=False)
+        record log if True
+
+    Attributes
+    ----------
+    coupling_ : array-like, shape (n_source_samples, n_target_samples)
+        The optimal coupling
+    mapping_ : array-like, shape (n_features (+ 1), n_features)
+        (if bias) for kernel == linear
+        The associated mapping
+        array-like, shape (n_source_samples (+ 1), n_features)
+        (if bias) for kernel == gaussian
+    log_ : dictionary
+        The dictionary of log, empty dic if parameter log is not True
+
+    References
+    ----------
+
+    .. [8] M. Perrot, N. Courty, R. Flamary, A. Habrard,
+            "Mapping estimation for discrete optimal transport",
+            Neural Information Processing Systems (NIPS), 2016.
+
+    """
+
+    def __init__(self, mu=1, eta=0.001, use_bias=False, metric="sqeuclidean",
+                 norm=None, kernel="linear", sigma=1, max_iter=100, tol=1e-5,
+                 max_inner_iter=10, inner_tol=1e-6, log=False, verbose=False,
+                 verbose2=False):
+
+        self.metric = metric
+        self.norm = norm
+        self.mu = mu
+        self.eta = eta
+        self.use_bias = use_bias
+        self.kernel = kernel
+        self.sigma = sigma
+        self.max_iter = max_iter
+        self.tol = tol
+        self.max_inner_iter = max_inner_iter
+        self.inner_tol = inner_tol
+        self.log = log
+        self.verbose = verbose
+        self.verbose2 = verbose2
+
+    def fit(self, Xs=None, ys=None, Xt=None, yt=None):
+        """Builds an optimal coupling and estimates the associated mapping
+        from source and target sets of samples (Xs, ys) and (Xt, yt)
+
+        Parameters
+        ----------
+        Xs : array-like, shape (n_source_samples, n_features)
+            The training input samples.
+        ys : array-like, shape (n_source_samples,)
+            The class labels
+        Xt : array-like, shape (n_target_samples, n_features)
+            The training input samples.
+        yt : array-like, shape (n_target_samples,)
+            The class labels. If some target samples are unlabeled, fill the
+            yt's elements with -1.
+
+            Warning: Note that, due to this convention -1 cannot be used as a
+            class label
+
+        Returns
+        -------
+        self : object
+            Returns self
+        """
+
+        # check the necessary inputs parameters are here
+        if check_params(Xs=Xs, Xt=Xt):
+
+            self.xs_ = Xs
+            self.xt_ = Xt
+
+            if self.kernel == "linear":
+                returned_ = joint_linear_ot_mapping(
+                    Xs, Xt, mu=self.mu, eta=self.eta, use_bias=self.use_bias,
+                    verbose=self.verbose, verbose2=self.verbose2,
+                    numItermax=self.max_iter,
+                    numInnerItermax=self.max_inner_iter, stopThr=self.tol,
+                    stopInnerThr=self.inner_tol, log=self.log)
+
+            # elif self.kernel == "gaussian":
+            #     returned_ = joint_OT_mapping_kernel(
+            #         Xs, Xt, mu=self.mu, eta=self.eta, bias=self.bias,
+            #         sigma=self.sigma, verbose=self.verbose,
+            #         verbose2=self.verbose, numItermax=self.max_iter,
+            #         numInnerItermax=self.max_inner_iter,
+            #         stopInnerThr=self.inner_tol, stopThr=self.tol,
+            #         log=self.log)
+
+            # deal with the value of log
+            if self.log:
+                self.coupling_, self.mapping_, self.bias_, self.log_ = returned_
+            else:
+                self.coupling_, self.mapping_, self.bias_ = returned_
+                self.log_ = dict()
+
+        return self
+
+    def transform(self, Xs):
+        """Transports source samples Xs onto target ones Xt
+
+        Parameters
+        ----------
+        Xs : array-like, shape (n_source_samples, n_features)
+            The training input samples.
+
+        Returns
+        -------
+        transp_Xs : array-like, shape (n_source_samples, n_features)
+            The transport source samples.
+        """
+
+        # check the necessary inputs parameters are here
+        if check_params(Xs=Xs):
+
+            if np.array_equal(self.xs_, Xs):
+                # perform standard barycentric mapping
+                transp = self.coupling_ / np.sum(self.coupling_, 1)[:, None]
+
+                # set nans to 0
+                transp[~ np.isfinite(transp)] = 0
+
+                # compute transported samples
+                transp_Xs = np.dot(transp, self.xt_)
+            else:
+                if self.kernel == "gaussian":
+                    K = kernel(Xs, self.xs_, method=self.kernel,
+                               sigma=self.sigma)
+                elif self.kernel == "linear":
+                    K = Xs
+                # if self.bias:
+                    # K = np.hstack((K, np.ones((Xs.shape[0], 1))))
+                transp_Xs = K.dot(self.mapping_) + self.bias_
 
             return transp_Xs

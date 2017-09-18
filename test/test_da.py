@@ -505,3 +505,141 @@ def test_otda():
     da_emd = ot.da.OTDA_mapping_kernel()     # init class
     da_emd.fit(xs, xt, numItermax=10)       # fit distributions
     da_emd.predict(xs)    # interpolation of source samples
+
+
+def test_new_mapping_transport_class():
+    """test_mapping_transport
+    """
+
+    ns = 150
+    nt = 200
+
+    Xs, ys = get_data_classif('3gauss', ns)
+    Xt, yt = get_data_classif('3gauss2', nt)
+    Xs_new, _ = get_data_classif('3gauss', ns + 1)
+
+    ##########################################################################
+    # kernel == linear mapping tests
+    ##########################################################################
+
+    # check computation and dimensions if bias == False
+    otda_old = ot.da.MappingTransport(kernel="linear", bias=False)
+    otda_old.fit(Xs=Xs, Xt=Xt)
+    assert hasattr(otda_old, "coupling_")
+    assert hasattr(otda_old, "mapping_")
+    assert hasattr(otda_old, "log_")
+
+    # new mapping
+    otda_new = ot.da.NewMappingTransport(kernel="linear", bias=False)
+    otda_new.fit(Xs=Xs, Xt=Xt)
+    assert hasattr(otda_new, "coupling_")
+    assert hasattr(otda_new, "mapping_")
+    assert hasattr(otda_new, "log_")
+    assert hasattr(otda_new, "bias_")
+
+    # assert_equal(otda.coupling_.shape, ((Xs.shape[0], Xt.shape[0])))
+    # assert_equal(otda.mapping_.shape, ((Xs.shape[1], Xt.shape[1])))
+
+    # # test margin constraints
+    # mu_s = unif(ns)
+    # mu_t = unif(nt)
+    # assert_allclose(
+    #     np.sum(otda.coupling_, axis=0), mu_t, rtol=1e-3, atol=1e-3)
+    # assert_allclose(
+    #     np.sum(otda.coupling_, axis=1), mu_s, rtol=1e-3, atol=1e-3)
+
+    # # test transform
+    # transp_Xs = otda.transform(Xs=Xs)
+    # assert_equal(transp_Xs.shape, Xs.shape)
+
+    # transp_Xs_new = otda.transform(Xs_new)
+
+    # # check that the oos method is working
+    # assert_equal(transp_Xs_new.shape, Xs_new.shape)
+
+    # # check computation and dimensions if bias == True
+    # otda = ot.da.MappingTransport(kernel="linear", bias=True)
+    # otda.fit(Xs=Xs, Xt=Xt)
+    # assert_equal(otda.coupling_.shape, ((Xs.shape[0], Xt.shape[0])))
+    # assert_equal(otda.mapping_.shape, ((Xs.shape[1] + 1, Xt.shape[1])))
+
+    # # test margin constraints
+    # mu_s = unif(ns)
+    # mu_t = unif(nt)
+    # assert_allclose(
+    #     np.sum(otda.coupling_, axis=0), mu_t, rtol=1e-3, atol=1e-3)
+    # assert_allclose(
+    #     np.sum(otda.coupling_, axis=1), mu_s, rtol=1e-3, atol=1e-3)
+
+    # # test transform
+    # transp_Xs = otda.transform(Xs=Xs)
+    # assert_equal(transp_Xs.shape, Xs.shape)
+
+    # transp_Xs_new = otda.transform(Xs_new)
+
+    # # check that the oos method is working
+    # assert_equal(transp_Xs_new.shape, Xs_new.shape)
+
+
+if __name__ == "__main__":
+
+    # test_new_mapping_transport_class()
+
+    ns = 150
+    nt = 200
+
+    Xs, ys = get_data_classif('3gauss', ns)
+    Xt, yt = get_data_classif('3gauss2', nt)
+    Xs_new, _ = get_data_classif('3gauss', ns + 1)
+
+    ##########################################################################
+    # kernel == linear mapping tests
+    ##########################################################################
+
+    # check computation and dimensions if bias == False
+    otda_old = ot.da.MappingTransport(kernel="linear", bias=False)
+    otda_old.fit(Xs=Xs, Xt=Xt)
+    assert hasattr(otda_old, "coupling_")
+    assert hasattr(otda_old, "mapping_")
+    assert hasattr(otda_old, "log_")
+
+    # new mapping
+    otda_new = ot.da.NewMappingTransport(kernel="linear", use_bias=False)
+    otda_new.fit(Xs=Xs, Xt=Xt)
+    assert hasattr(otda_new, "coupling_")
+    assert hasattr(otda_new, "mapping_")
+    assert hasattr(otda_new, "log_")
+    assert hasattr(otda_new, "bias_")
+
+    assert_equal(otda_new.bias_, np.zeros_like(otda_new.bias_))
+
+    assert_allclose(otda_old.coupling_, otda_new.coupling_)
+    assert_allclose(otda_old.mapping_, otda_new.mapping_)
+
+    # check transformed points
+    assert_allclose(otda_old.transform(Xs_new), otda_new.transform(Xs_new))
+
+    # check computation and dimensions if bias == True
+    otda_old = ot.da.MappingTransport(kernel="linear", bias=True)
+    otda_old.fit(Xs=Xs, Xt=Xt)
+    assert hasattr(otda_old, "coupling_")
+    assert hasattr(otda_old, "mapping_")
+    assert hasattr(otda_old, "log_")
+
+    # new mapping
+    otda_new = ot.da.NewMappingTransport(kernel="linear", use_bias=True)
+    otda_new.fit(Xs=Xs, Xt=Xt)
+    assert hasattr(otda_new, "coupling_")
+    assert hasattr(otda_new, "mapping_")
+    assert hasattr(otda_new, "log_")
+    assert hasattr(otda_new, "bias_")
+
+    assert_allclose(otda_old.coupling_, otda_new.coupling_)
+    assert_allclose(otda_old.mapping_,
+                    np.concatenate([otda_new.mapping_,
+                                    otda_new.bias_.reshape(1, -1)],
+                                   axis=0)
+                    )
+
+    # check transformed points
+    assert_allclose(otda_old.transform(Xs_new), otda_new.transform(Xs_new))

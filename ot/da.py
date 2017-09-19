@@ -424,7 +424,7 @@ def joint_OT_mapping_linear(xs, xt, mu=1, eta=0.001, bias=False, verbose=False,
 
 
 def joint_linear_ot_mapping(
-        Xs, Xt, mu=1, eta=0.001,
+        Xs, Xt, ys=None, yt=None, mu=1, eta=0.001, limit_max=10,
         use_bias=False, verbose=False,
         verbose2=False, max_iter=100, max_inner_iter=10,
         inner_tol=1e-6, tol=1e-5, log=False,
@@ -540,8 +540,25 @@ def joint_linear_ot_mapping(
 
     mu_s, mu_t = unif(ns), unif(nt)
 
-    # I can modify the cost function here
     Cost = dist(Xs, Xt) * ns
+    if (ys is not None) and (yt is not None):
+
+        if limit_max != np.infty:
+            limit_max = limit_max * np.max(Cost)
+
+        # assumes labeled source samples occupy the first rows
+        # and labeled target samples occupy the first columns
+        classes = [c for c in np.unique(ys) if c != -1]
+        for c in classes:
+            idx_s = np.where((ys != c) & (ys != -1))
+            idx_t = np.where(yt == c)
+
+            # all the coefficients corresponding to a source sample
+            # and a target sample :
+            # with different labels get a infinite
+            for j in idx_t[0]:
+                Cost[idx_s[0], j] = limit_max
+
     Coupling = emd(mu_s, mu_t, Cost)
 
     vloss = []
@@ -611,10 +628,10 @@ def joint_linear_ot_mapping(
 
     if log:
         log['loss'] = vloss
-        return Coupling, Mapping, Bias, log
+        return Cost, Coupling, Mapping, Bias, log
 
     else:
-        return Coupling, Mapping, Bias
+        return Cost, Coupling, Mapping, Bias
 
 
 def joint_OT_mapping_kernel(xs, xt, mu=1, eta=0.001, kerneltype='gaussian',
@@ -2030,7 +2047,7 @@ class NewMappingTransport(BaseEstimator):
     def __init__(self, mu=1, eta=0.001, use_bias=False, metric="sqeuclidean",
                  norm=None, kernel="linear", sigma=1, max_iter=100, tol=1e-5,
                  max_inner_iter=10, inner_tol=1e-6, log=False, verbose=False,
-                 verbose2=False):
+                 verbose2=False, limit_max=10):
 
         self.metric = metric
         self.norm = norm
@@ -2039,6 +2056,7 @@ class NewMappingTransport(BaseEstimator):
         self.use_bias = use_bias
         self.kernel = kernel
         self.sigma = sigma
+        self.limit_max = limit_max
         self.max_iter = max_iter
         self.tol = tol
         self.max_inner_iter = max_inner_iter
@@ -2080,7 +2098,9 @@ class NewMappingTransport(BaseEstimator):
 
             if self.kernel == "linear":
                 returned_ = joint_linear_ot_mapping(
-                    Xs, Xt, mu=self.mu, eta=self.eta, use_bias=self.use_bias,
+                    Xs, Xt, ys=ys, yt=yt,
+                    limit_max=self.limit_max,
+                    mu=self.mu, eta=self.eta, use_bias=self.use_bias,
                     verbose=self.verbose, verbose2=self.verbose2,
                     numItermax=self.max_iter,
                     numInnerItermax=self.max_inner_iter, stopThr=self.tol,
@@ -2097,9 +2117,9 @@ class NewMappingTransport(BaseEstimator):
 
             # deal with the value of log
             if self.log:
-                self.coupling_, self.mapping_, self.bias_, self.log_ = returned_
+                self.cost_, self.coupling_, self.mapping_, self.bias_, self.log_ = returned_
             else:
-                self.coupling_, self.mapping_, self.bias_ = returned_
+                self.cost_, self.coupling_, self.mapping_, self.bias_ = returned_
                 self.log_ = dict()
 
         return self

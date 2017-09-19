@@ -643,3 +643,26 @@ if __name__ == "__main__":
 
     # check transformed points
     assert_allclose(otda_old.transform(Xs_new), otda_new.transform(Xs_new))
+
+    # test unsupervised vs semi-supervised mode
+    otda_unsup = ot.da.NewMappingTransport()
+    otda_unsup.fit(Xs=Xs, ys=ys, Xt=Xt)
+    n_unsup = np.sum(otda_unsup.cost_)
+
+    otda_semi = ot.da.NewMappingTransport()
+    otda_semi.fit(Xs=Xs, ys=ys, Xt=Xt, yt=yt)
+    assert_equal(otda_semi.cost_.shape, ((Xs.shape[0], Xt.shape[0])))
+    n_semisup = np.sum(otda_semi.cost_)
+
+    # check that the cost matrix norms are indeed different
+    assert n_unsup != n_semisup, "semisupervised mode not working"
+
+    # check that the coupling forbids mass transport between labeled source
+    # and labeled target samples
+    mass_semi = np.sum(
+        otda_semi.coupling_[otda_semi.cost_ == otda_semi.limit_max])
+    mass_semi = otda_semi.coupling_[otda_semi.cost_ == otda_semi.limit_max]
+
+    # we need to use a small tolerance here, otherwise the test breaks
+    assert_allclose(mass_semi, np.zeros_like(mass_semi),
+                    rtol=1e-2, atol=1e-2)
